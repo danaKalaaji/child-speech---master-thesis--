@@ -1,0 +1,296 @@
+# Speech Recognition Algorithm for Detecting Mispronuciation for Research with Children
+
+An Automatic Speech Recognition (ASR) pipeline designed for improving speech assessment and phoneme-level analysis with no finetuning (aka if no data available which is often the case for children), with specialized focus on children's speech evaluation. This system combines segmentation and phonemization models to evaluate speech accuracy against reference texts using IPA encodings.
+
+## 🎯 Project Overview
+
+This pipeline was developed as part of an EPFL master thesis. The system is designed to assist educators and clinicians in evaluating pronunciation accuracy in real-time, focusing on **binary classification** (correct/incorrect) rather than traditional transcription tasks.
+
+### Key Objectives
+- Detect mispronunciations in children's speech to alleviate mechanical aspects of literacy assessment for educators and researchers
+- Minimize false positives (consistently under 5%) for professional use
+- Handle both real words and pseudowords effectively
+- Support regional accent variations and pronunciation flexibility
+
+## 🚀 Features
+
+- **Multi-model ASR Pipeline**: Combines segmentation and phonemization models for accurate speech analysis
+- **Audio Segmentation**: Adaptive segmentation with optimal 4-second duration
+- **REST API**: Flask-based server for remote processing
+- **Batch Processing**: Support for processing multiple audio files
+- **Visualization Tools**: Built-in plotting functions for results analysis
+- **Children's Speech Optimization**: Better handling of high speech variability
+- **Tunable Threshold**: Optimized for educational/clinical integration. Caters to the needs of the clinical (high emphasis on low FN or FP)
+- Real-time Processing
+## 🏗️ Architecture
+
+The pipeline consists of four main stages:
+
+### 1. ASR Segmenter
+- **Model**: `Dandan0K/Intervention-xls-FR-no-LM`
+- jonatasgrosman/wav2vec2-xls-r-1b-french model with added "LM = None" to support hotwords integration for more chances of correct (pseudo)word predicted 
+- Generates a text transcription along with the start and end timestamps for each identified item
+
+### 2. Audio Segmentation
+- Dynamic audio splitting using timestamped speech segments
+- Optimal segment duration: 4 seconds with 1-second padding
+- Addresses mismatches in length of training and input audio
+- Handles segmentation errors and improves phoneme resolution
+- 3.3% accuracy improvement for standard words, 3.6% for pseudowords
+
+### 3. Phoneme-Level ASR
+- **Model**: `Cnam-LMSSC/wav2vec2-french-phonemizer`
+- Generates IPA phonetic transcriptions
+- Operates without language model for better mispronunciation detection
+
+### 4. Custom Decoding & Scoring
+- Decoder for phoneme logit processing with a better handling of child speech variability and noise.
+- Custom error lists for subtle mispronunciation detection
+- Multiple candidate consideration and flexible boundary handling
+- **+13.7% accuracy improvement** over standard decoding
+
+## 📋 Installation
+
+### Prerequisites
+
+#### 1. NVIDIA CUDA Toolkit
+Download and install the NVIDIA CUDA Toolkit:
+- [NVIDIA CUDA Toolkit Downloads](https://developer.nvidia.com/cuda-downloads?target_os=Windows&target_arch=x86_64&target_version=11&target_type=exe_local)
+
+#### 2. Create Conda Environment
+```bash
+# Create and activate environment
+conda create --name asr python=3.10 -y
+conda activate asr
+
+# Install PyTorch with CUDA support
+conda install pytorch==2.0.0 torchaudio==2.0.0 pytorch-cuda=11.8 -c pytorch -c nvidia
+conda install -c pypi cudnn -y
+```
+
+#### 3. Install Dependencies
+```bash
+pip install transformers
+pip install flask flask-cors
+pip install librosa
+pip install pandas numpy matplotlib
+pip install requests openpyxl
+```
+
+## 📊 Required Files
+
+### Target Excel File (`Targets_IPA.xlsx`)
+Create an Excel file with the following columns:
+
+| Column | Description |
+|--------|-------------|
+| `Target_IPA` | Primary IPA encoding(s) of target words (space-separated) |
+| `Asr_IPA_Other` | Alternative valid IPA encodings for regional accents/flexibility |
+| `Errors_Letter_End` | Expected transcription errors at word endings |
+| `Errors_Letter_Begining` | Expected transcription errors at word beginnings |
+
+**Example:**
+```
+Target_IPA: "b ɔ̃ ʒ u ʁ"
+Asr_IPA_Other: "b õ ʒ u ʁ"
+Errors_Letter_End: "ʁ"
+Errors_Letter_Begining: "b"
+```
+
+## 🚀 Usage
+
+### 1. Start the ASR Server
+
+```bash
+python asr_speech_eval.py
+```
+
+The service will start on port 5000 by default.
+
+#### Command Line Arguments
+```bash
+python asr_server.py --flask_port 8070 --flask_host 0.0.0.0 \
+  --target_excel_path "Targets_IPA.xlsx" \
+  --target_sheet_name 0
+```
+
+**Arguments:**
+- `--flask_port`: Server port (default: 8070)
+- `--flask_host`: Host address (default: 0.0.0.0)
+- `--id_asr_segmenter`: Segmentation model ID
+- `--id_asr_phonemizer`: Phonemization model ID
+- `--target_excel_path`: Path to target Excel file
+- `--target_sheet_name`: Sheet name/index in Excel file
+
+### 2. Process Audio Files
+
+#### Single File Processing
+```python
+from asr_client import process_single_audio_file
+
+result = process_single_audio_file(
+    audio_file_path="path/to/audio.wav",
+    reference_text="bonjour comment allez vous",
+    server_url="http://localhost:8070"
+)
+
+print(f"ASR Score: {result['asr_score']}")
+print(f"ASR Decode: {result['asr_decode']}")
+```
+
+#### Batch Processing
+```python
+import pandas as pd
+from asr_client import process_dataset
+
+# Prepare DataFrame
+df = pd.DataFrame({
+    'filepath': ['audio1.wav', 'audio2.wav'],
+    'reference_text': ['bonjour monde', 'comment allez vous']
+})
+
+results_df = process_dataset(
+    df=df,
+    server_url="http://localhost:8070",
+    output_file="results.csv"
+)
+```
+
+### 3. API Usage
+
+#### Health Check
+```http
+GET /health
+```
+Response: `{"status": "healthy"}`
+
+#### ASR Pipeline
+```http
+POST /asr_pipeline
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+    "reference_text": "bonjour comment allez vous",
+    "audio": "base64_encoded_audio_data",
+    "target_duration_segment": 4.0,
+    "min_duration_segment": 3.0,
+    "threshold_diff": 2.0,
+    "max_pred_per_word": 25,
+    "k": 20,
+    "overlap": true,
+    "segmenter": true
+}
+```
+
+**Response:**
+```json
+{
+    "asr_score": [1, 1, 0, 1],
+    "asr_decode": [["bonjour"], ["comment"], [], ["vous"]]
+}
+```
+
+## 📈 Visualization
+
+### Overall Results Analysis
+```python
+from asr_client import plot_overall_results
+
+plot_overall_results(
+    result_df=results_df,
+    reference_score_col='ground_truth_score',
+    asr_score_column='asr_score',
+    tasks_col='task_id',
+    title='ASR Performance Analysis'
+)
+```
+
+### Item-level Analysis
+```python
+from asr_client import plot_item_level_results
+
+plot_item_level_results(
+    result_df=results_df,
+    reference_text_col='reference_text',
+    reference_score_col='ground_truth_score',
+    tasks_col='task_id',
+    only_keep_task_id='task_1',
+    title='Word-level Performance'
+)
+```
+
+## ⚙️ Configuration Parameters
+
+### Segmentation Parameters
+- `target_duration_segment` (float): Target segment duration (default: 4.0s)
+- `min_duration_segment` (float): Minimum segment duration (default: 3.0s)
+- `overlap` (bool): Allow overlapping segments (default: True)
+- `segmenter` (bool): Use segmenter for longer audio (default: True)
+
+### Decoding Parameters
+- `threshold_diff` (float): Threshold for alternative predictions (default: 2.0)
+- `max_pred_per_word` (int): Maximum predictions per word (default: 25)
+- `k` (int): Number of alternative phonemes (-1 for full vocabulary, default: 20)
+
+## 📊 Performance Metrics
+
+### Overall Results
+- **Final decoder**: +13.7% accuracy improvement over standard decoding
+- **False positive rates**: Consistently under 5% across all configurations
+- **Easy words**: 12.6% improvement with final decoder
+- **Pseudowords**: Robust handling with 3.6% additional improvement
+- **Custom language model + hotwords**: 20% accuracy increase
+
+### Key Strengths
+- Strong performance with background noise and accented speech
+- Handles variable speaking rates and disfluencies
+- Generalizable across different regional accents
+- Clinical-grade reliability for professional use
+
+## 🔧 Output Format
+
+### ASR Score
+Binary list indicating correctness for each word:
+- `1`: Word correctly pronounced
+- `0`: Word incorrectly pronounced or not detected
+- `-1`: Processing error
+
+### ASR Decode
+List of phonetic predictions for each word:
+- Empty list `[]`: No valid prediction found
+- List of strings: Phonetic transcription variants
+
+## 🐛 Troubleshooting
+
+### Common Issues
+1. **Connection errors**: Verify server is running on specified port
+2. **Model loading failures**: Check internet connection and HuggingFace availability
+3. **Audio format issues**: Ensure supported formats (WAV, MP3, etc.)
+4. **Memory errors**: Reduce batch size or use CPU instead of GPU
+
+
+## Dataset & Evaluation
+
+- **18 reading lists** with 96 items categorized by difficulty
+- **~6 hours** of children's speech audio with unusable transcription for finetuning
+- **Clinician-annotated ground truth** with 0-2 accuracy scale
+- Evaluation focuses on minimizing false negatives for clinical reliability
+
+## Technical Implementation
+
+- **Primary Framework**: Wav2Vec2 (self-supervised learning)
+- **Phonetic Encoding**: IPA-based transcription system
+- **Language**: French (adaptable to other languages)
+- **Real-time Processing**: Optimized for educational/clinical integration
+- **GPU Acceleration**: CUDA support for improved performance
+
+## Future Work
+
+- Refine Wav2Vec2 Phonemizer with larger datasets
+- Develop sophisticated edge case handling algorithms
+
+
+
