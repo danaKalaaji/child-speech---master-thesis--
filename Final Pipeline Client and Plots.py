@@ -117,15 +117,19 @@ def process_dataset(df: pd.DataFrame,
                     pipeline_params: Optional[Dict[str, Any]] = None,
                     asr_score_col='asr_score',
                     asr_decode_col ='asr_decode',
+                    save_to_csv: bool = True
                     ) -> pd.DataFrame:
     """
-    Process a dataset of audio files through the ASR server
+    Process a dataset of audio files through the ASR server and return results in a DataFrame.
     
     Args:
         df (pd.DataFrame): DataFrame with 'filepath' and 'reference_text' columns
         server_url (str, optional): URL of the ASR server, defaults to "http://localhost:8070"
         output_file (str, optional): Path to save results CSV file
-        pipeline_params (dict, optional): Additional parameters for the pipeline
+        pipeline_params (dict, optional): Additional parameters for the pipeline. Defaults to None.
+        asr_score_col (str, optional): Name of the column to store ASR scores. Defaults to 'asr_score'.
+        asr_decode_col (str, optional): Name of the column to store ASR decoded text. Defaults to 'asr_decode'.
+        save_to_csv (bool, optional): Whether to save results to CSV file. Defaults to True.
         
     Returns:
         pd.DataFrame: DataFrame with results including 'asr_score' and 'asr_decode'        
@@ -176,29 +180,44 @@ def process_dataset(df: pd.DataFrame,
             logger.error(f"Error processing file {audio_file_path}: {str(e)}")
             result_df.at[index, asr_score_col] = -1
             result_df.at[index, asr_decode_col] = -1
-
-    # Save results to CSV if output file is specified
-    output_path = Path(output_file)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    result_df.to_csv(output_path, index=False)
-    logger.info(f"Results saved to {output_file}")
+            result_df.at[index, asr_decode_col] = None
+    # Save results to CSV if requested
+    if save_to_csv and output_file:
+        output_path = Path(output_file)
+        result_df.to_csv(output_path, index=False)
+        logger.info(f"Results saved to {output_file}")
     return result_df
 
         
 ############################################ Plotting Functions #################################################
 
-def plot_overall_results(result_df, 
-                         reference_score_col, asr_score_column='asr_score', 
-                         tasks_col = None, title='ASR Overall Results'):
+def plot_overall_results(
+    result_df, 
+    reference_score_col, 
+    asr_score_column='asr_score', 
+    tasks_col: Optional[str] = None, 
+    title='ASR Overall Results'
+):
     """
-    Plots TP, FP, FN, and TN rates from ASR and reference scores.
+    Plots the True Positive (TP), True Negative (TN), False Positive (FP), and False Negative (FN) rates
+    for ASR predictions compared to reference scores, optionally per task.
 
     Parameters:
-    - result_df: DataFrame containing ASR and reference scores
-    - title: Plot title
-    - reference_score_col: column name of the reference accuracy
-    - asr_acc_column: column name of the ASR model prediction (default = 'asr_score')
-    - tasks_col: column name containing the tasks IDs (optional, for per-task analysis)
+        - result_df (pandas.DataFrame): DataFrame containing ASR and reference scores.
+        - reference_score_col (str): Column name of the reference accuracy scores.
+        - asr_score_column (str, optional): Column name of the ASR model predictions. Defaults to 'asr_score'.
+        - tasks_col (str or None, optional): Column name containing the task IDs for per-task analysis. If None, computes overall rates.
+        - title (str, optional): Title for the plot. Defaults to 'ASR Overall Results'.
+    
+    Returns:
+        - None: Displays a bar plot of the rates and prints the rates for each task or overall.
+    Raises:
+        - ValueError: If input DataFrame or required columns are missing, or if score parsing fails.
+
+    Notes:
+        - The function expects the reference score column to contain space-separated values, with 'NA' treated as 0.
+        - Reference scores of 2 ('correct') and 1 ('acceptable') are both mapped to 1 (correct).
+        - If tasks_col is None, computes overall rates; if a string, computes per-task rates using that column.
     """
 
     # Validate input DataFrame
@@ -210,9 +229,11 @@ def plot_overall_results(result_df,
         raise ValueError(f"DataFrame must contain '{asr_score_column}' column")
     if tasks_col is not None and tasks_col not in result_df.columns:
         raise ValueError(f"DataFrame must contain '{tasks_col}' column for per-task analysis mode")
+    if tasks_col is not None and tasks_col not in result_df.columns:
+        raise ValueError(f"DataFrame must contain '{tasks_col}' column for per-task analysis mode")
     
     # Filter out rows with invalid ASR score and replace 'NA' with 0
-    result_df = result_df[result_df[asr_score_column] != -1].copy()
+    result_df = result_df[pd.notnull(result_df[asr_score_column])].copy()
     result_df[reference_score_col] = result_df[reference_score_col].apply(
         lambda x: ' '.join(['0' if token == 'NA' else token for token in x.split()])
     )
@@ -220,13 +241,12 @@ def plot_overall_results(result_df,
     # Initialize dictionaries to hold counts for each config_id
     tp_counts, tn_counts, fp_counts, fn_counts, word_counts = {}, {}, {}, {}, {}
 
-
     for idx, row in result_df.iterrows():
         
         try: # Parse ASR and reference scores
             reference_score = [int(i) for i in row[reference_score_col].split() if i.isdigit()]
             # Change mapping of reference scores to match ASR scores (treat 2:'correct' and 1:'acceptable' as 1:correct)
-            reference_score = [1 if val == 2 else val for val in reference_score]
+            reference_score = [1 if val in (1, 2) else val for val in reference_score]
             asr_score = [int(i) for i in row[asr_score_column].split() if i.isdigit()]
         except Exception as e:
             raise ValueError(f"Error parsing scores for row {idx}: {e}")
@@ -299,9 +319,38 @@ def plot_overall_results(result_df,
         print(f"{config_id} → TP: {tp:.2f}, TN: {tn:.2f}, FP: {fp:.2f}, FN: {fn:.2f}")
 
 
-def plot_item_level_results(result_df, reference_text_col: str, 
-                            reference_score_col: str, tasks_col: str, only_keep_task_id: str,
-                            asr_score_column='asr_score', title = 'ASR Item Level Results'):
+def plot_item_level_results(result_df, 
+                            reference_text_col: str, 
+                            reference_score_col: str, 
+                            tasks_col: str, 
+                            only_keep_task_id: str,
+                            asr_score_column='asr_score', 
+                            title = 'ASR Item Level Results'):
+    """
+    Plots True Positive (TP), True Negative (TN), False Positive (FP), and False Negative (FN) rates
+    for each word in a specific task, comparing ASR predictions to reference scores.
+
+    Parameters:
+        - result_df (pandas.DataFrame): DataFrame containing ASR and reference scores.
+        - reference_text_col (str): Column name of the reference text.
+        - reference_score_col (str): Column name of the reference accuracy scores.
+        - tasks_col (str): Column name containing the task IDs.
+        - only_keep_task_id (str): Task ID to filter and plot results for.
+        - asr_score_column (str, optional): Column name of the ASR model predictions. Defaults to 'asr_score'.
+        - title (str, optional): Title for the plot. Defaults to 'ASR Item Level Results'.
+
+    Returns:
+        - None: Displays a bar plot of the rates and prints the rates for each word in the selected task.
+
+    Raises:
+        - ValueError: If input DataFrame or required columns are missing, or if score parsing fails.
+
+    Notes:
+        - The function expects the reference score column to contain space-separated values, with 'NA' treated as 0.
+        - Reference scores of 2 ('correct') and 1 ('acceptable') are both mapped to 1 (correct).
+        - Only results for the specified task ID are plotted.
+    """
+    
     # Validate input DataFrame
     if not isinstance(result_df, pd.DataFrame):
         raise ValueError("Input must be a pandas DataFrame")
@@ -314,8 +363,8 @@ def plot_item_level_results(result_df, reference_text_col: str,
     if tasks_col not in result_df.columns:
         raise ValueError(f"DataFrame must contain '{tasks_col}' column to remove unwanted tasks ids")
     
-    # Filter out rows not in only_keep_tasks_id if tasks_col is provides
-    result_df = result_df[result_df[asr_score_column] != -1].copy()
+    # Filter out rows not in only_keep_task_id if tasks_col is provided
+    result_df = result_df[pd.notnull(result_df[asr_score_column])].copy()
     try:
         # Filter the DataFrame to keep only specified task IDs from the tasks_col
         result_df = result_df[result_df[tasks_col] == only_keep_task_id]
@@ -335,7 +384,7 @@ def plot_item_level_results(result_df, reference_text_col: str,
         try:
             reference_score = [int(i) for i in row[reference_score_col].split() if i.isdigit()]
             # Change mapping of reference scores to match ASR scores (treat 2:'correct' and 1:'acceptable' as 1:correct)
-            reference_score = [1 if val == 2 else val for val in reference_score]
+            reference_score = [1 if val in (1, 2) else val for val in reference_score]
             asr_score = [int(i) for i in row[asr_score_column].split() if i.isdigit()]
         except Exception as e:
             raise ValueError(f"Error parsing scores for row {idx}: {e}")
@@ -344,10 +393,10 @@ def plot_item_level_results(result_df, reference_text_col: str,
 
         # Initialize counts for this row
         length= len(asr_score)
-        tp = [0] * len(length)
-        tn = [0] * len(length)
-        fp = [0] * len(length)
-        fn = [0] * len(length)
+        tp = [0] * length
+        tn = [0] * length
+        fp = [0] * length
+        fn = [0] * length
         
         for i in range(len(asr_score)):
             if asr_score[i] == 1 and reference_score[i] == 1:
@@ -393,7 +442,6 @@ def plot_item_level_results(result_df, reference_text_col: str,
     plt.xticks(words, [word for word in row['reference_text'].split(" ")])  
     plt.ylabel('Rate')
     plt.title(title)
-    plt.title('TP, TN, FP, FN Rates per Word')
     # put legend on the right
     plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     plt.grid(axis='y', linestyle='--', alpha=0.5, color='black')
