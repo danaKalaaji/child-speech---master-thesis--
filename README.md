@@ -166,7 +166,7 @@ Content-Type: application/json
 ```json
 {
     "asr_score": [1, 1, 0, 1],
-    "asr_decode": [["bonjour"], ["comment"], [], ["vous"]]
+    "asr_decode": [["bɔ̃ʒuʁko"], ["uʁkɔmɑ̃"], [], ["levu"]]
 }
 ```
 
